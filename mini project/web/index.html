@@ -1,0 +1,657 @@
+<title>바닷속 탈출</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap">
+<style>
+  /* 깊은 바다 한 가지 분위기로 고정한 페이지. 가운데 게임 화면, 아래에 조작 안내 */
+  :root {
+    --sea: #0b2232;
+    --sea-2: #123447;
+    --foam: #e3f3f9;
+    --mist: #93b8c8;
+    --lamp: #ffd84d;
+    --rule: #26495c;
+    --display: "Jua", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    --body: "Gowun Dodum", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    color-scheme: dark;
+  }
+  html, body { background: var(--sea); color: var(--foam); }
+  body { font-family: var(--body); font-size: 15px; line-height: 1.6; }
+  .wrap {
+    max-width: 920px; margin: 0 auto;
+    padding-inline: 16px; padding-block: 20px 32px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  h1 { font-family: var(--display); font-weight: 400; font-size: 34px; margin: 0; letter-spacing: 0.02em; text-wrap: balance; }
+  header p { margin: 0; color: var(--mist); min-width: 0; }
+  .stage { background: var(--sea-2); border: 1px solid var(--rule); border-radius: 8px; padding: 6px; }
+  canvas {
+    display: block; width: 100%; max-width: 100%; height: auto; aspect-ratio: 3 / 2;
+    border-radius: 4px; touch-action: none; cursor: pointer;
+  }
+  canvas:focus-visible { outline: 3px solid var(--lamp); outline-offset: 2px; }
+  .pad { display: none; justify-content: space-between; gap: 12px; }
+  .pad .group { display: flex; gap: 10px; }
+  .pad button {
+    width: 64px; height: 64px; border-radius: 10px;
+    border: 2px solid var(--foam); background: var(--sea-2); color: var(--foam);
+    font-family: var(--display); font-size: 22px; touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .pad button.jump { width: 96px; }
+  .pad button.on { background: var(--lamp); color: var(--sea); border-color: var(--lamp); }
+  @media (pointer: coarse) { .pad { display: flex; } }
+  .help { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0; padding: 0; list-style: none; color: var(--mist); font-size: 14px; }
+  .help kbd {
+    font-family: var(--display); font-size: 13px; color: var(--foam);
+    border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; padding: 0 6px; margin-right: 4px;
+  }
+  .note { margin: 0; color: var(--mist); font-size: 13px; }
+</style>
+
+<main class="wrap">
+  <header>
+    <h1>바닷속 탈출</h1>
+    <p>깊은 바닷속에서 눈을 떴다. 발판을 밟고 수면 위 출구까지 올라가자.</p>
+  </header>
+
+  <div class="stage">
+    <canvas id="game" width="900" height="600" tabindex="0" aria-label="바닷속 탈출 게임 화면. 방향키로 조작합니다."></canvas>
+  </div>
+
+  <div class="pad" aria-label="터치 조작 버튼">
+    <div class="group">
+      <button type="button" id="pad-left" data-key="Left" aria-label="왼쪽">◀</button>
+      <button type="button" id="pad-right" data-key="Right" aria-label="오른쪽">▶</button>
+    </div>
+    <div class="group">
+      <button type="button" id="pad-down" data-key="Down" aria-label="빠르게 내려오기">▼</button>
+      <button type="button" id="pad-up" data-key="Up" class="jump" aria-label="점프">점프</button>
+    </div>
+  </div>
+
+  <ul class="help">
+    <li><kbd>←</kbd><kbd>→</kbd>이동</li>
+    <li><kbd>↑</kbd><kbd>Space</kbd>점프</li>
+    <li><kbd>↓</kbd>빠르게 내려오기</li>
+    <li><kbd>Esc</kbd>난이도 선택</li>
+  </ul>
+  <p class="note">키가 먹지 않으면 게임 화면을 한 번 클릭하세요. 최고 기록은 이 브라우저에 저장됩니다.</p>
+</main>
+
+<script>
+// ── 화면과 물리 설정 (game.py와 같은 값) ──
+const W = 900, H = 600;
+const STEP_MS = 1000 / 60;      // 화면 주사율과 상관없이 1초에 60번 계산
+const GRAVITY = 0.6;
+const JUMP_POWER = 13;
+const MOVE_SPEED = 5;
+const FAST_FALL = 0.8;
+const MAX_FALL_SPEED = 15;
+const JUMP_BUFFER = 6;
+const PW = 44, PH = 44;
+const GROUND_Y = H - 40;
+const PLATFORM_H = 14;
+
+// ── 특수 발판 ──
+const ICE_GRIP = 0.05;
+const ICE_MIN_WIDTH = 120;
+const SLOW_FACTOR = 0.4;
+
+// ── 게임 규칙 ──
+const MAX_LIVES = 3;
+const INVERT_GAP = [8, 10];
+const REVERT_AFTER = 3;
+const FLASH_FRAMES = 12;
+
+const RULES = {
+  easy: { widths: [120, 150, 180, 210], gapY: [80, 95], gapX: [30, 110],
+          movingFrom: 8, movingChance: 0.15, movingSpeed: 1.2, specialFrom: 5, specialChance: 0.15 },
+  normal: { widths: [90, 120, 150, 180], gapY: [80, 105], gapX: [60, 135],
+            movingFrom: 6, movingChance: 0.25, movingSpeed: 1.5, specialFrom: 4, specialChance: 0.25 },
+  hard: { widths: [60, 80, 100, 130], gapY: [90, 110], gapX: [90, 145],
+          movingFrom: 3, movingChance: 0.35, movingSpeed: 2.0, specialFrom: 3, specialChance: 0.35 },
+};
+
+const MODES = [
+  { name: "이지", rule: "easy", goal: 30 },
+  { name: "노말", rule: "normal", goal: 50 },
+  { name: "하드", rule: "hard", goal: 70 },
+  { name: "무한", rule: "endless", goal: null },
+];
+const ENDLESS_HARD_FROM = 50;
+
+const FONT = '"Jua", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif';
+
+const COLORS = {
+  bg: "#eaf7fc", wave: "#a6daf2", bubble: "#7fc6ea",
+  platform: "#111111", moving: "#2f5fd0", ice: "#9be7ff", slow: "#7a4b22", goal: "#2a9d4a",
+  body: "#c4c4c4", shade: "#8a8a8a", eye: "#ffffff", line: "#000000",
+  text: "#111111", faint: "#8aa0aa", heart: "#e02020", heart_empty: "#c8c8c8",
+  button: "#ffffff", pressed: "#ffd84d", panel: "#ffffff",
+};
+const invert = hex => "#" + (0xffffff - parseInt(hex.slice(1), 16)).toString(16).padStart(6, "0");
+const INVERTED = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, invert(v)]));
+
+const BUTTON_SIZE = 50;
+const BUTTONS = {
+  Up: [W - 150, H - 135], Left: [W - 210, H - 75], Down: [W - 150, H - 75], Right: [W - 90, H - 75],
+};
+const WAVE_BAND = 220;
+const BUBBLE_COUNT = 14;
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const randint = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+const choice = arr => arr[Math.floor(Math.random() * arr.length)];
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+
+// 시드가 같으면 항상 같은 수열을 내는 난수 (배경 물결 모양 고정용)
+function seeded(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t = (t + 0x6D2B79F5) >>> 0;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function loadRecords() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("sea-escape-records"));
+    if (Array.isArray(saved) && saved.length === MODES.length) return saved.map(n => Number(n) || 0);
+  } catch (e) { /* 저장소를 쓸 수 없으면 0부터 시작 */ }
+  return MODES.map(() => 0);
+}
+function saveRecords(records) {
+  try { localStorage.setItem("sea-escape-records", JSON.stringify(records)); } catch (e) { /* 무시 */ }
+}
+
+class Platform {
+  constructor(floor, centerX, y, width, kind = "normal", speed = 0) {
+    this.floor = floor;
+    this.kind = kind;
+    this.w = width;
+    this.center0 = centerX;
+    this.x = centerX - width / 2;
+    this.y = y;
+    this.speed = kind === "moving" ? choice([-speed, speed]) : 0;
+    this.minX = Math.max(10, this.x - 80);
+    this.maxX = Math.min(W - 10 - width, this.x + 80);
+  }
+  update() {
+    if (!this.speed) return;
+    this.x += this.speed;
+    if (this.x <= this.minX || this.x >= this.maxX) this.speed = -this.speed;
+  }
+}
+
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.keys = new Set();
+    this.pointerKeys = new Map();   // 손가락/마우스 하나마다 누르고 있는 버튼
+    this.modeIndex = 1;
+    this.records = loadRecords();
+    this.bubbles = Array.from({ length: BUBBLE_COUNT }, () => [rand(0, W), rand(0, H), rand(3, 8), rand(0.4, 1.2)]);
+    this.reset();
+    this.state = "title";
+  }
+
+  reset() {
+    const mode = MODES[this.modeIndex];
+    this.ruleKey = mode.rule;
+    this.goal = mode.goal;
+    this.platforms = [new Platform(0, W / 2, GROUND_Y, W)];
+    this.player = { x: W / 2 - PW / 2, y: GROUND_Y - PH, vx: 0, vy: 0, standing: null, facing: 1 };
+    this.lives = MAX_LIVES;
+    this.highest = 0;
+    this.bestPlatform = this.platforms[0];
+    this.inverted = false;
+    this.nextInvert = randint(...INVERT_GAP);
+    this.revertAt = 0;
+    this.flash = 0;
+    this.blink = 0;
+    this.jumpBuffer = 0;
+    this.camY = 0;
+    this.bgSeed = randint(0, 10000);
+    this.ensurePlatforms();
+  }
+  start() { this.reset(); this.state = "play"; }
+  goToTitle() { this.reset(); this.state = "title"; }
+  endGame(state) {
+    this.state = state;
+    this.records[this.modeIndex] = Math.max(this.records[this.modeIndex], this.highest);
+    saveRecords(this.records);
+  }
+
+  // ── 발판 만들기 ──
+  rulesFor(floor) {
+    if (this.ruleKey === "endless") return floor >= ENDLESS_HARD_FROM ? RULES.hard : RULES.normal;
+    return RULES[this.ruleKey];
+  }
+  addPlatform() {
+    const prev = this.platforms[this.platforms.length - 1];
+    const floor = prev.floor + 1;
+    const rules = this.rulesFor(floor);
+    const y = prev.y - randint(...rules.gapY);
+    let kind, w;
+    if (floor === this.goal) {
+      kind = "goal"; w = 220;
+    } else {
+      w = choice(rules.widths);
+      const roll = Math.random();
+      if (floor >= rules.movingFrom && roll < rules.movingChance) kind = "moving";
+      else if (floor >= rules.specialFrom && roll < rules.movingChance + rules.specialChance) kind = choice(["ice", "slow"]);
+      else kind = "normal";
+      if (kind === "ice") w = Math.max(w, ICE_MIN_WIDTH);
+    }
+    const prevW = Math.min(prev.w, 200);
+    const distance = prevW / 2 + rand(...rules.gapX) + w / 2;
+    const low = w / 2 + 20, high = W - w / 2 - 20;
+    const side = choice([-1, 1]);
+    let centerX = prev.center0 + side * distance;
+    if (centerX < low || centerX > high) centerX = prev.center0 - side * distance;
+    centerX = clamp(centerX, low, high);
+    this.platforms.push(new Platform(floor, centerX, y, w, kind, rules.movingSpeed));
+  }
+  ensurePlatforms() {
+    while (this.platforms[this.platforms.length - 1].floor < this.highest + 15) {
+      if (this.goal && this.platforms[this.platforms.length - 1].floor >= this.goal) break;
+      this.addPlatform();
+    }
+  }
+  nearbyPlatforms() {
+    return this.platforms.slice(Math.max(0, this.highest - 12), this.highest + 16);
+  }
+
+  // ── 입력 ──
+  pressed(key) {
+    if (this.keys.has(key)) return true;
+    for (const k of this.pointerKeys.values()) if (k === key) return true;
+    return false;
+  }
+  keyDown(key, repeat) {
+    if (this.state === "title") {
+      if (key === "Up") { this.modeIndex = (this.modeIndex + MODES.length - 1) % MODES.length; this.reset(); }
+      else if (key === "Down") { this.modeIndex = (this.modeIndex + 1) % MODES.length; this.reset(); }
+      else if (["1", "2", "3", "4"].includes(key)) { this.modeIndex = Number(key) - 1; this.start(); }
+      else if (key === "Enter" || key === "Space") this.start();
+      return;
+    }
+    if (this.state === "over" || this.state === "clear") {
+      if (key === "Enter" || key === "Space") this.start();
+      else if (key === "Escape") this.goToTitle();
+      return;
+    }
+    if (key === "Escape") { this.goToTitle(); return; }
+    if ((key === "Up" || key === "Space") && !repeat) this.jumpBuffer = JUMP_BUFFER;
+    this.keys.add(key);
+  }
+  keyUp(key) { this.keys.delete(key); }
+  pointerDown(id, x, y) {
+    if (this.state === "title") {
+      this.titleLayout().options.forEach(([x1, y1, x2, y2], i) => {
+        if (x >= x1 && x <= x2 && y >= y1 && y <= y2) { this.modeIndex = i; this.start(); }
+      });
+      return;
+    }
+    if (this.state !== "play") { this.start(); return; }
+    for (const [key, [bx, by]] of Object.entries(BUTTONS)) {
+      if (x >= bx && x <= bx + BUTTON_SIZE && y >= by && y <= by + BUTTON_SIZE) this.pressButton(id, key);
+    }
+  }
+  pressButton(id, key) {
+    if (this.state !== "play") return;
+    this.pointerKeys.set(id, key);
+    if (key === "Up") this.jumpBuffer = JUMP_BUFFER;
+  }
+  pointerUp(id) { this.pointerKeys.delete(id); }
+
+  // ── 게임 진행 ──
+  update() {
+    const p = this.player;
+    const nearby = this.nearbyPlatforms();
+    for (const plat of nearby) plat.update();
+
+    let target = 0;
+    if (this.pressed("Left")) { target -= MOVE_SPEED; p.facing = -1; }
+    if (this.pressed("Right")) { target += MOVE_SPEED; p.facing = 1; }
+    const surface = p.standing ? p.standing.kind : null;
+    if (surface === "slow") target *= SLOW_FACTOR;
+    if (surface === "ice") p.vx += (target - p.vx) * ICE_GRIP;
+    else p.vx = target;
+    if (p.standing) p.x += p.standing.speed;
+    p.x = clamp(p.x + p.vx, 0, W - PW);
+
+    if (this.jumpBuffer > 0 && p.standing) { p.vy = -JUMP_POWER; this.jumpBuffer = 0; }
+    this.jumpBuffer = Math.max(0, this.jumpBuffer - 1);
+
+    p.vy += GRAVITY;
+    if (this.pressed("Down")) p.vy += FAST_FALL;
+    p.vy = Math.min(p.vy, MAX_FALL_SPEED);
+    const oldBottom = p.y + PH;
+    p.y += p.vy;
+
+    p.standing = null;
+    if (p.vy > 0) {
+      for (const plat of nearby) {
+        const overlapX = plat.x < p.x + PW && p.x < plat.x + plat.w;
+        if (overlapX && oldBottom <= plat.y && plat.y <= p.y + PH) {
+          p.y = plat.y - PH; p.vy = 0; p.standing = plat;
+          this.onLand(plat);
+          break;
+        }
+      }
+    }
+
+    const topLine = this.camY + H * 0.35;
+    if (p.y < topLine) this.camY += (p.y - topLine) * 0.15;
+
+    if (p.y > this.camY + H + 20) this.loseLife();
+
+    this.flash = Math.max(0, this.flash - 1);
+    this.blink = Math.max(0, this.blink - 1);
+  }
+  onLand(plat) {
+    if (plat.floor <= this.highest) return;
+    this.highest = plat.floor;
+    this.bestPlatform = plat;
+    if (plat.floor === this.goal) { this.endGame("clear"); return; }
+    this.ensurePlatforms();
+    this.checkInvert();
+  }
+  checkInvert() {
+    if (!this.inverted && this.highest >= this.nextInvert) {
+      this.inverted = true;
+      this.revertAt = this.highest + REVERT_AFTER;
+      this.flash = FLASH_FRAMES;
+    } else if (this.inverted && this.highest >= this.revertAt) {
+      this.inverted = false;
+      this.nextInvert = this.highest + randint(...INVERT_GAP);
+      this.flash = FLASH_FRAMES;
+    }
+  }
+  loseLife() {
+    this.lives -= 1;
+    if (this.lives === 0) { this.endGame("over"); return; }
+    const plat = this.bestPlatform, p = this.player;
+    p.x = plat.x + plat.w / 2 - PW / 2;
+    p.y = plat.y - PH;
+    p.vx = 0; p.vy = 0; p.standing = plat;
+    this.camY = Math.min(0, plat.y - H * 0.6);
+    this.blink = 60;
+  }
+  updateBubbles() {
+    for (const b of this.bubbles) {
+      b[1] -= b[3];
+      b[0] += Math.sin(b[1] / 25) * 0.3;
+      if (b[1] < -10) { b[0] = rand(0, W); b[1] = H + 10; }
+    }
+  }
+
+  // ── 그리기 도구 ──
+  color(name) { return (this.inverted ? INVERTED : COLORS)[name]; }
+  rect(x1, y1, x2, y2, fill, outline, width = 1) {
+    const c = this.ctx;
+    if (fill) { c.fillStyle = fill; c.fillRect(x1, y1, x2 - x1, y2 - y1); }
+    if (outline) { c.strokeStyle = outline; c.lineWidth = width; c.strokeRect(x1, y1, x2 - x1, y2 - y1); }
+  }
+  oval(x1, y1, x2, y2, fill, outline, width = 1) {
+    const c = this.ctx;
+    c.beginPath();
+    c.ellipse((x1 + x2) / 2, (y1 + y2) / 2, (x2 - x1) / 2, (y2 - y1) / 2, 0, 0, Math.PI * 2);
+    if (fill) { c.fillStyle = fill; c.fill(); }
+    if (outline) { c.strokeStyle = outline; c.lineWidth = width; c.stroke(); }
+  }
+  text(x, y, str, color, size, align = "center", baseline = "middle") {
+    const c = this.ctx;
+    c.font = `${size}px ${FONT}`;
+    c.fillStyle = color;
+    c.textAlign = align;
+    c.textBaseline = baseline;
+    c.fillText(str, x, y);
+  }
+  smoothLine(points, color, width) {
+    // 점들 사이의 가운데를 곡선으로 잇는다 (tkinter의 smooth=True와 같은 방식)
+    const c = this.ctx;
+    c.beginPath();
+    c.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length - 1; i++) {
+      const mx = (points[i][0] + points[i + 1][0]) / 2, my = (points[i][1] + points[i + 1][1]) / 2;
+      c.quadraticCurveTo(points[i][0], points[i][1], mx, my);
+    }
+    const last = points[points.length - 1];
+    c.lineTo(last[0], last[1]);
+    c.strokeStyle = color; c.lineWidth = width; c.lineCap = "round"; c.lineJoin = "round";
+    c.stroke();
+  }
+  heart(x, y, s, color) {
+    const c = this.ctx;
+    c.beginPath();
+    c.moveTo(x, y + s * 0.8);
+    c.bezierCurveTo(x - s * 1.2, y, x - s * 0.7, y - s * 0.9, x, y - s * 0.35);
+    c.bezierCurveTo(x + s * 0.7, y - s * 0.9, x + s * 1.2, y, x, y + s * 0.8);
+    c.fillStyle = color; c.fill();
+  }
+  triangle(cx, cy, dir, color) {
+    const c = this.ctx, s = 9;
+    const pts = {
+      Up: [[cx, cy - s], [cx + s, cy + s * 0.7], [cx - s, cy + s * 0.7]],
+      Down: [[cx, cy + s], [cx + s, cy - s * 0.7], [cx - s, cy - s * 0.7]],
+      Left: [[cx - s, cy], [cx + s * 0.7, cy - s], [cx + s * 0.7, cy + s]],
+      Right: [[cx + s, cy], [cx - s * 0.7, cy - s], [cx - s * 0.7, cy + s]],
+    }[dir];
+    c.beginPath();
+    c.moveTo(...pts[0]); c.lineTo(...pts[1]); c.lineTo(...pts[2]); c.closePath();
+    c.fillStyle = color; c.fill();
+  }
+
+  // ── 그리기 ──
+  draw() {
+    this.drawBackground();
+    this.drawPlatforms();
+    this.drawPlayer();
+    this.drawHud();
+    this.drawButtons();
+    if (this.state === "title") this.drawTitle();
+    else if (this.state !== "play") this.drawResult();
+    if (this.flash > 0 && !reduceMotion) this.rect(0, 0, W, H, "#ffffff");
+  }
+  drawBackground() {
+    this.rect(0, 0, W, H, this.color("bg"));
+    const scroll = this.camY * 0.5;
+    const first = Math.floor(scroll / WAVE_BAND);
+    for (let band = first - 1; band < first + Math.floor(H / WAVE_BAND) + 2; band++) {
+      const rng = seeded(band * 7919 + this.bgSeed);
+      for (let k = 0; k < 2; k++) {
+        const x = -100 + rng() * W;
+        const baseY = band * WAVE_BAND + rng() * WAVE_BAND - scroll;
+        const n = 5 + Math.floor(rng() * 7);
+        const points = [];
+        for (let i = 0; i < n; i++) points.push([x + i * 40, baseY + rng() * 28 - 14]);
+        this.smoothLine(points, this.color("wave"), 6);
+      }
+    }
+    for (const [x, y, r] of this.bubbles) this.oval(x - r, y - r, x + r, y + r, null, this.color("bubble"), 2);
+  }
+  drawPlatforms() {
+    for (const plat of this.nearbyPlatforms()) {
+      const y = plat.y - this.camY;
+      if (y < -100 || y > H + 20) continue;
+      const x1 = plat.x, x2 = plat.x + plat.w, y2 = y + PLATFORM_H;
+      if (plat.kind === "ice" || plat.kind === "slow") {
+        this.rect(x1, y, x2, y2, this.color(plat.kind), this.color("line"), 2);
+      } else {
+        this.rect(x1, y, x2, y2, plat.kind === "normal" ? this.color("platform") : this.color(plat.kind));
+      }
+      if (plat.kind === "ice") {
+        const c = this.ctx;
+        c.beginPath(); c.moveTo(x1 + 8, y + 4); c.lineTo(x2 - 8, y + 4);
+        c.strokeStyle = this.color("eye"); c.lineWidth = 2; c.stroke();
+      }
+      if (plat.kind === "slow") {
+        for (let i = 1; i < 4; i++) {
+          const dx = x1 + plat.w * i / 4;
+          this.oval(dx - 4, y2 - 2, dx + 4, y2 + 8, this.color("slow"));
+        }
+      }
+      if (plat.kind === "goal") {
+        const doorX = plat.x + plat.w / 2;
+        this.rect(doorX - 25, y - 70, doorX + 25, y, this.color("goal"), this.color("line"), 2);
+        this.text(doorX, y - 35, "EXIT", this.color("eye"), 14);
+      }
+    }
+  }
+  drawPlayer() {
+    if (this.blink > 0 && Math.floor(this.blink / 5) % 2 === 0) return;
+    const p = this.player;
+    const x = p.x, y = p.y - this.camY;
+    this.oval(x - 3, y + 2, x + PW + 3, y + PH + 2, this.color("shade"));
+    this.oval(x, y, x + PW, y + PH, this.color("body"));
+    const look = p.facing * 2;
+    for (const ex of [x + 14, x + 30]) {
+      this.oval(ex - 7, y + 10, ex + 7, y + 22, this.color("eye"), this.color("line"), 2);
+      this.oval(ex - 3 + look, y + 13, ex + 3 + look, y + 19, this.color("line"));
+    }
+    const mx = x + PW / 2 + look, my = y + 32, c = this.ctx;
+    c.beginPath();
+    c.moveTo(mx, my - 5); c.lineTo(mx + 5, my); c.lineTo(mx, my + 5); c.lineTo(mx - 5, my); c.closePath();
+    c.fillStyle = this.color("body"); c.fill();
+    c.strokeStyle = this.color("line"); c.lineWidth = 2; c.stroke();
+  }
+  drawHud() {
+    const mode = MODES[this.modeIndex];
+    const goalText = this.goal ? `목표 ${this.goal} F` : "끝없이";
+    this.rect(0, 0, 200, 78, this.color("bg"));
+    this.text(20, 14, `${this.highest} F`, this.color("text"), 32, "left", "top");
+    this.text(22, 54, `${mode.name} · ${goalText}`, this.color("text"), 16, "left", "top");
+    this.rect(W - 170, 0, W, 68, this.color("bg"));
+    for (let i = 0; i < MAX_LIVES; i++) {
+      const x = W - 40 - (MAX_LIVES - 1 - i) * 45;
+      this.heart(x, 32, 16, this.color(i < this.lives ? "heart" : "heart_empty"));
+    }
+    if (this.inverted && this.state === "play") {
+      const left = this.revertAt - this.highest;
+      this.text(W / 2, 30, `모래알이 덮쳐왔다! ${left}층 더 오르면 돌아온다!`, this.color("text"), 19);
+    }
+  }
+  drawButtons() {
+    for (const [key, [x, y]] of Object.entries(BUTTONS)) {
+      const fill = this.pressed(key) ? this.color("pressed") : this.color("button");
+      this.rect(x, y, x + BUTTON_SIZE, y + BUTTON_SIZE, fill, this.color("line"), 3);
+      this.triangle(x + BUTTON_SIZE / 2, y + BUTTON_SIZE / 2, key, this.color("line"));
+    }
+  }
+  titleLayout() {
+    const left = W / 2 - 300, right = W / 2 + 300, top = 30;
+    const options = MODES.map((_, i) => {
+      const y = top + 140 + i * 44;
+      return [left + 70, y, right - 70, y + 36];
+    });
+    return { left, right, top, options };
+  }
+  drawTitle() {
+    const { left, right, top, options } = this.titleLayout();
+    this.rect(left, top, right, top + 470, this.color("panel"), this.color("line"), 3);
+    this.text(W / 2, top + 40, "바닷속 탈출", this.color("text"), 40);
+    this.text(W / 2, top + 85, "깊은 바닷속에서 눈을 떴다.", this.color("text"), 18);
+    this.text(W / 2, top + 112, "발판을 밟고 올라가 수면 위 출구로 탈출하자!", this.color("text"), 18);
+    options.forEach(([x1, y1, x2, y2], i) => {
+      const mode = MODES[i], selected = i === this.modeIndex, cy = (y1 + y2) / 2;
+      this.rect(x1, y1, x2, y2, this.color(selected ? "pressed" : "panel"), this.color("line"), selected ? 3 : 1);
+      this.text(x1 + 20, cy, `${i + 1}. ${mode.name}`, this.color("text"), 20, "left");
+      this.text(x1 + 140, cy, mode.goal ? `목표 ${mode.goal} F` : "끝없이", this.color("text"), 17, "left");
+      if (this.records[i]) this.text(x2 - 20, cy, `최고 ${this.records[i]} F`, this.color("faint"), 15, "right");
+    });
+    const legendY = top + 340;
+    this.text(W / 2, legendY, "←/→ 이동    ↑·Space 점프    ↓ 빠르게 내려오기", this.color("text"), 17);
+    const samples = [["platform", "보통"], ["moving", "움직임"], ["ice", "미끄러움"], ["slow", "느려짐"]];
+    samples.forEach(([kind, label], i) => {
+      const x = left + 95 + i * 115;
+      const outline = kind === "ice" || kind === "slow" ? this.color("line") : null;
+      this.rect(x, legendY + 30, x + 34, legendY + 40, this.color(kind), outline, 1);
+      this.text(x + 40, legendY + 35, label, this.color("text"), 15, "left");
+    });
+    this.text(W / 2, legendY + 85, "↑/↓로 고르고 Enter로 시작 (숫자키·클릭도 가능)", this.color("text"), 18);
+  }
+  drawResult() {
+    const mode = MODES[this.modeIndex];
+    let title, detail;
+    if (this.state === "clear") {
+      title = "수면 위로 탈출 성공!";
+      detail = `${mode.name} 모드 · 남은 목숨 ${this.lives}개`;
+    } else if (this.goal === null) {
+      title = "게임 오버";
+      detail = `무한 모드 기록: ${this.highest} F (최고 ${this.records[this.modeIndex]} F)`;
+    } else {
+      title = "탈출 실패";
+      detail = `${mode.name} 모드 · ${this.highest} F / ${this.goal} F`;
+    }
+    const top = H / 2 - 100;
+    this.rect(W / 2 - 290, top, W / 2 + 290, top + 180, this.color("panel"), this.color("line"), 3);
+    this.text(W / 2, top + 45, title, this.color("text"), 38);
+    this.text(W / 2, top + 90, detail, this.color("text"), 20);
+    this.text(W / 2, top + 135, "Enter·클릭: 다시 하기    Esc: 난이도 선택", this.color("text"), 17);
+  }
+}
+
+// ── 시작 ──
+const canvas = document.getElementById("game");
+const game = new Game(canvas);
+
+const KEYMAP = { ArrowLeft: "Left", ArrowRight: "Right", ArrowUp: "Up", ArrowDown: "Down", " ": "Space", Spacebar: "Space" };
+window.addEventListener("keydown", e => {
+  const key = KEYMAP[e.key] || e.key;
+  if (["Left", "Right", "Up", "Down", "Space"].includes(key)) e.preventDefault();
+  game.keyDown(key, e.repeat);
+});
+window.addEventListener("keyup", e => game.keyUp(KEYMAP[e.key] || e.key));
+window.addEventListener("blur", () => { game.keys.clear(); game.pointerKeys.clear(); });
+
+function toCanvas(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height];
+}
+canvas.addEventListener("pointerdown", e => {
+  canvas.focus({ preventScroll: true });
+  const [x, y] = toCanvas(e);
+  game.pointerDown(e.pointerId, x, y);
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+});
+for (const type of ["pointerup", "pointercancel"]) canvas.addEventListener(type, e => game.pointerUp(e.pointerId));
+
+// 휴대폰용 터치 버튼
+for (const btn of document.querySelectorAll(".pad button")) {
+  btn.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    if (game.state !== "play") { game.start(); return; }
+    game.pressButton(e.pointerId, btn.dataset.key);
+    try { btn.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+  });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    btn.addEventListener(type, e => game.pointerUp(e.pointerId));
+  }
+  btn.addEventListener("contextmenu", e => e.preventDefault());
+}
+const padButtons = [...document.querySelectorAll(".pad button")];
+
+let last = performance.now(), acc = 0;
+function frame(now) {
+  acc += Math.min(now - last, 250);
+  last = now;
+  while (acc >= STEP_MS) {
+    if (game.state === "play") game.update();
+    game.updateBubbles();
+    acc -= STEP_MS;
+  }
+  game.draw();
+  for (const btn of padButtons) btn.classList.toggle("on", game.pressed(btn.dataset.key));
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+canvas.focus({ preventScroll: true });
+</script>
